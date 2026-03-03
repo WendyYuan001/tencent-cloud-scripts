@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Wendy Chat Pro</title>
+    <style>
+        body { font-family: 'Inter', system-ui, sans-serif; background: #0f172a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .login-card { background: #1e293b; padding: 2rem; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 100%; max-width: 400px; text-align: center; }
+        h1 { margin-bottom: 1.5rem; color: #38bdf8; }
+        .auth-btn { display: block; width: 100%; padding: 0.8rem; margin: 1rem 0; border-radius: 0.5rem; text-decoration: none; font-weight: 600; transition: 0.2s; }
+        .github-btn { background: #333; color: white; }
+        .google-btn { background: #fff; color: #333; }
+        .admin-form { margin-top: 2rem; border-top: 1px solid #334155; padding-top: 1rem; }
+        .admin-form input { width: 100%; padding: 0.5rem; margin-bottom: 0.5rem; border-radius: 0.3rem; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box; }
+        .admin-btn { width: 100%; padding: 0.5rem; background: #38bdf8; color: #0f172a; border: none; border-radius: 0.3rem; cursor: pointer; font-weight: bold; }
+        .footer { margin-top: 2rem; font-size: 0.8rem; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <h1>Wendy Chat Pro</h1>
+        <p>请选择登录方式</p>
+        
+        <a href="/auth/github" class="auth-btn github-btn">通过 GitHub 登录</a>
+        <a href="/auth/google" class="auth-btn google-btn">通过 Google 登录</a>
+
+        <div class="admin-form">
+            <p>管理员入口</p>
+            <form action="/auth/admin" method="POST">
+                <input type="text" name="username" placeholder="用户名" required>
+                <input type="password" name="password" placeholder="密码" required>
+                <button type="submit" class="admin-btn">管理员登录</button>
+            </form>
+        </div>
+
+        <div class="footer">
+            &copy; 2026 Wendy AI Studio
+        </div>
+    </div>
+</body>
+</html>

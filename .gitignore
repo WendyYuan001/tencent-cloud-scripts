@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+*.zip
+.openclaw/
+.clawhub/
+reports/
+memory/
+temp_himalaya.toml
+report.txt
+report_email.txt
+openhands_report.md
+chat-relay/.env
+chat-relay/wendy.db
+chat-relay/sessions.db
