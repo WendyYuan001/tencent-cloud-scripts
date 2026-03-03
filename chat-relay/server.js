@@ -52,11 +52,17 @@ passport.deserializeUser((user, done) => done(null, user));
 passport.use('admin-local', new LocalStrategy({
     usernameField: 'username',
     passwordField: 'password'
-}, (username, password, done) => {
+}, async (username, password, done) => {
     console.log('Login attempt:', username);
     if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
         console.log('Admin login success');
-        return done(null, { id: 'admin', username: 'Admin', isAdmin: true });
+        const adminId = 'admin';
+        // Ensure admin exists in DB for settings storage
+        await dbRun(
+            'INSERT INTO users (id, provider, provider_id, username) VALUES ($id, $provider, $provider_id, $username) ON CONFLICT (id) DO NOTHING',
+            { $id: adminId, $provider: 'local', $provider_id: 'admin', $username: 'Admin' }
+        );
+        return done(null, { id: adminId, username: 'Admin', isAdmin: true });
     }
     console.log('Admin login fail');
     return done(null, false, { message: 'Invalid credentials' });
@@ -141,7 +147,10 @@ const checkAuth = (req, res, next) => {
     const token = req.query.token;
     if (token && bridgeTokens.has(token)) {
         const bridge = bridgeTokens.get(token);
-        if (bridge.expires > Date.now()) return next();
+        if (bridge.expires > Date.now()) {
+            req.user = bridge.user; // Temporarily set user for this request
+            return next();
+        }
     }
     res.status(401).send('Unauthorized');
 };
@@ -169,11 +178,12 @@ const BASE_WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.join(process.env.HO
 const BASE_DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(process.env.HOME || process.env.USERPROFILE, 'Downloads');
 
 const getUserPaths = (user) => {
+    if (!user) return { workspace: '/tmp', downloads: '/tmp', sessionKey: 'agent:main:webchat:guest' };
     if (user.isAdmin) {
         return {
             workspace: BASE_WORKSPACE_DIR,
             downloads: BASE_DOWNLOADS_DIR,
-            sessionKey: 'agent:main:main'
+            sessionKey: 'agent:main:webchat:admin'
         };
     }
     const userWorkspace = path.join(BASE_WORKSPACE_DIR, 'users', user.id);
@@ -183,7 +193,7 @@ const getUserPaths = (user) => {
     return {
         workspace: userWorkspace,
         downloads: userDownloads,
-        sessionKey: `agent:isolated:${user.id}`
+        sessionKey: `agent:main:webchat:${user.id}`
     };
 };
 
@@ -199,37 +209,37 @@ app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'em
 app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/login.html' }), redirectWithToken);
 app.get('/logout', (req, res) => { req.logout(() => res.redirect('/login')); });
 
-app.get('/user-info', (req, res) => {
-    console.log('User-info check. SessionID:', req.sessionID, 'Authenticated:', req.isAuthenticated(), 'User:', req.user ? req.user.username : 'none');
-    if (req.isAuthenticated()) return res.json({ authenticated: true, user: req.user });
+app.get('/user-info', async (req, res) => {
+    let user = req.user;
+    let authenticated = req.isAuthenticated();
     
     // Check if bridge token is valid
     const token = req.query.token;
-    console.log('Checking token:', token);
-    if (token && bridgeTokens.has(token)) {
+    if (!authenticated && token && bridgeTokens.has(token)) {
         const bridge = bridgeTokens.get(token);
         if (bridge.expires > Date.now()) {
-            console.log('Valid bridge token found for user:', bridge.user.username);
-            // Log them in for this session
-            req.login(bridge.user, (err) => {
-                if (err) {
-                    console.error('req.login error:', err);
-                    return res.status(500).json({ authenticated: false, error: 'Login error' });
-                }
-                req.session.save((err) => {
-                    if (err) console.error('session.save error after token login:', err);
-                    console.log('Session saved after token login. SessionID:', req.sessionID);
-                    return res.json({ authenticated: true, user: bridge.user });
-                });
-            });
-            return;
-        } else {
-            console.log('Expired bridge token');
+            user = bridge.user;
+            authenticated = true;
         }
     }
     
-    console.log('Unauthorized user-info request');
+    if (authenticated && user) {
+        // Fetch latest data from DB including API Key
+        const dbUser = await dbGet('SELECT * FROM users WHERE id = ?', [user.id]);
+        return res.json({ authenticated: true, user: { ...dbUser, isAdmin: user.isAdmin } });
+    }
+    
     res.status(401).json({ authenticated: false });
+});
+
+app.post('/update-settings', checkAuth, async (req, res) => {
+    const { zhipu_api_key } = req.body;
+    try {
+        await dbRun('UPDATE users SET zhipu_api_key = ? WHERE id = ?', [zhipu_api_key, req.user.id]);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // File Handling Middleware for Multer
@@ -321,6 +331,7 @@ server.on('upgrade', (request, socket, head) => {
                     headers: { 'Origin': 'https://chat.ymy-ai.app' }
                 });
                 const msgQueue = [];
+                let isHandshaked = false;
 
                 gateway.on('open', () => {
                     console.log('Gateway connection opened');
@@ -340,22 +351,26 @@ server.on('upgrade', (request, socket, head) => {
                                     minProtocol: 3, maxProtocol: 3,
                                     client: { id: 'webchat-ui', version: '2.0.0', platform: 'web', mode: 'webchat' },
                                     role: 'operator',
+                                    scopes: ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.write'],
                                     auth: { token: GATEWAY_TOKEN, password: GATEWAY_PASSWORD }
                                 }
                             }));
-                            return; // Stop here, client shouldn't see the challenge
+                            return;
                         }
                         
                         if (msg.type === 'res' && msg.id === 'handshake') {
                             if (msg.ok) {
                                 console.log('Gateway handshake SUCCESS');
+                                isHandshaked = true;
                                 while (msgQueue.length > 0) {
-                                    gateway.send(msgQueue.shift());
+                                    const queued = msgQueue.shift();
+                                    console.log(`[Relay -> Gateway] Sending queued message`);
+                                    gateway.send(queued);
                                 }
                             } else {
                                 console.error('Gateway handshake FAILED:', msg.error || (msg.payload && msg.payload.message) || 'Unknown error');
                             }
-                            return; // Stop here, client shouldn't see handshake result
+                            return;
                         }
                     } catch (e) {
                         console.error('Error parsing Gateway message:', e);
@@ -371,27 +386,50 @@ server.on('upgrade', (request, socket, head) => {
                     }
                 });
 
-                ws.on('message', (data) => {
+                ws.on('message', async (data) => {
                     const rawData = data.toString();
-                    console.log(`[WS -> Gateway] ${rawData.substring(0, 200)}`);
                     try {
                         const msg = JSON.parse(rawData);
                         if (msg.method === 'chat.send') {
+                            const dbUser = await dbGet('SELECT zhipu_api_key FROM users WHERE id = ?', [user.id]);
+                            
+                            // If user has a key, we switch to agent.run which is more flexible
+                            if (dbUser && dbUser.zhipu_api_key) {
+                                console.log(`[Relay] Using Private GLM-4.7 for ${user.username}`);
+                                const agentRunMsg = {
+                                    type: 'req',
+                                    id: msg.id,
+                                    method: 'agent', // low-level agent.run
+                                    params: {
+                                        message: msg.params.message,
+                                        sessionKey: sessionKey,
+                                        idempotencyKey: msg.params.idempotencyKey || crypto.randomBytes(8).toString('hex'),
+                                        model: 'zai/glm-4.7',
+                                        providerOptions: {
+                                            zai: { apiKey: dbUser.zhipu_api_key }
+                                        }
+                                    }
+                                };
+                                if (isHandshaked) {
+                                    gateway.send(JSON.stringify(agentRunMsg));
+                                } else {
+                                    msgQueue.push(JSON.stringify(agentRunMsg));
+                                }
+                                return;
+                            }
+                            
+                            // Default behavior
                             msg.params = msg.params || {};
                             msg.params.sessionKey = sessionKey;
-                            // Ensure idempotencyKey exists
                             msg.params.idempotencyKey = msg.params.idempotencyKey || crypto.randomBytes(8).toString('hex');
-                            
                             const finalMsg = JSON.stringify(msg);
-                            if (gateway.readyState === WebSocket.OPEN) {
-                                console.log(`[Relay -> Gateway] Sending chat.send for ${user.username}`);
+                            if (isHandshaked) {
                                 gateway.send(finalMsg);
                             } else {
-                                console.log(`[Relay -> Gateway] Queueing chat.send for ${user.username}`);
                                 msgQueue.push(finalMsg);
                             }
                         } else {
-                            if (gateway.readyState === WebSocket.OPEN) {
+                            if (isHandshaked) {
                                 gateway.send(rawData);
                             } else {
                                 msgQueue.push(rawData);

@@ -79,6 +79,17 @@
             <span>Wendy Pro - <span id="username">Guest</span><span id="admin-badge">Admin</span></span>
             <a href="/logout" style="font-size: 10px; color: #ef4444;">Logout</a>
         </div>
+        
+        <!-- API Key Settings Area -->
+        <div style="padding: 10px; border-bottom: 1px solid #ddd; background: #fffbe6;">
+            <div style="font-size: 11px; font-weight: bold; margin-bottom: 5px; color: #856404;">智谱 GLM-4.7 API Key</div>
+            <div style="display: flex; gap: 5px;">
+                <input type="password" id="zhipu-key-input" placeholder="输入 API Key" style="flex: 1; font-size: 10px; padding: 4px; border: 1px solid #ffe58f; border-radius: 4px;">
+                <button onclick="saveApiKey()" style="padding: 4px 8px; font-size: 10px; border-radius: 4px; background: #faad14;">保存</button>
+            </div>
+            <div id="key-status" style="font-size: 9px; margin-top: 3px; color: #faad14;"></div>
+        </div>
+
         <div class="section-header" onclick="toggleSection('ws-list', 'a-ws')">
             <span>Agent Workspace</span> <span id="a-ws">▼</span>
         </div>
@@ -163,6 +174,10 @@
 
                 document.getElementById('username').textContent = data.user.username;
                 if (data.user.isAdmin) document.getElementById('admin-badge').style.display = 'inline-block';
+                if (data.user.zhipu_api_key) {
+                    document.getElementById('zhipu-key-input').value = data.user.zhipu_api_key;
+                    document.getElementById('key-status').innerText = '✅ 已配置';
+                }
                 
                 if (authToken) window.history.replaceState({}, document.title, "/");
 
@@ -294,6 +309,25 @@
 
         btn.onclick = () => sendMessage();
         input.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
+
+        async function saveApiKey() {
+            const key = document.getElementById('zhipu-key-input').value.trim();
+            const status = document.getElementById('key-status');
+            status.innerText = '正在保存...';
+            try {
+                const res = await fetch('/update-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ zhipu_api_key: key })
+                });
+                if (res.ok) {
+                    status.innerText = '✅ 保存成功';
+                    addStatus('系统已自动切换至智谱 GLM-4.7 模型');
+                } else { throw new Error(); }
+            } catch (e) {
+                status.innerText = '❌ 保存失败';
+            }
+        }
 
         init();
     </script>
